@@ -12,7 +12,6 @@ processVoxel <- function(v) {
   BRAIN <- voxeldat[,v]
   NOVAL <- 999
   retvals <- numeric()
-  retnames <- c()
   
   # Some effects may be allowed to vary within-person (anything
   # for which we have multiple observations per person):
