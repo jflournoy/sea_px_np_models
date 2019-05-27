@@ -3,6 +3,7 @@ loaded <- lapply(packages, library, character.only = TRUE)
 
 # #
 # load('~/data/SEA/fMRI_sensitivity/debug.Rdata')
+# load('/data/jflournoy/SEA/test_fmri_models/mx/debug.Rdata')
 # attach(designmat)
 # v <- 1e4
 # #
@@ -65,8 +66,6 @@ processVoxel <- function(v) {
     reg_retvals <- rep(NOVAL, length(model_terms) * length(name_col_correspondence))
     names(reg_retvals) <- paste0(rep(model_terms, length(name_col_correspondence)), 
                                  rep(names(name_col_correspondence), each = length(model_terms)))
-    
-    model_terms <- c('Intercept', attr(terms(model_formula), 'term.labels'))
     std_reg_retvals <- rep(NOVAL, length(model_terms))
     names(std_reg_retvals) <- paste0(model_terms, '-beta')
   }
@@ -83,8 +82,11 @@ processVoxel <- function(v) {
     }))
     names(reg_retvals_sw) <- gsub('[\\(\\)]', '', gsub('(.*?)\\.(.*)', '\\2\\1', names(reg_retvals_sw)))
   } else {
-    
+    model_terms_sw <- c('Intercept', attr(terms(model_formula), 'term.labels'))
+    reg_retvals_sw <- rep(NOVAL, length(model_terms_sw) * length(name_col_correspondence_sw))
+    names(reg_retvals_sw) <- paste0(rep(model_terms_sw, length(name_col_correspondence_sw)), 
+                                    rep(names(name_col_correspondence_sw), each = length(model_terms_sw)))
   }
-  retvals <- c(reg_retvals, std_reg_retvals)
+  retvals <- c(reg_retvals, std_reg_retvals, reg_retvals_sw)
   return(retvals)
 }
