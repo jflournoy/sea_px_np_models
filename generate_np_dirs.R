@@ -192,6 +192,29 @@ write_model_script <- function(model_dir, y, x, model_name,
   return(model_file)
 }
 
+write_read_args <- function(model_dir, mask_fname, set1, setlabels, model_file, testvoxel = '1000', output,
+                            debugfile = 'debug.Rdata', hpc = 'slurm', jobs = '40'){
+  readargs_text <- make_readargs(mask_fname = mask_fname, 
+                                 set1 = set1, 
+                                 setlabels = setlabels, 
+                                 model_file = model_file, 
+                                 testvoxel = testvoxel, 
+                                 output = output,
+                                 debugfile = debugfile, 
+                                 hpc = hpc, 
+                                 jobs = jobs)
+  readargs_file <- file.path(model_dir, 'readargs.R')
+  message('readargs file: ', readargs_file)
+  if(file.exists(readargs_file) & !overwrite){
+    stop('readargs file exists. See help.')
+  } else {
+    f <- file(readargs_file, open = 'w')
+    writeLines(readargs_text, f)
+    close(f)
+  }
+  return(readargs_file)
+}
+  
 move_mask <- function(mask, model_dir){
   message('Copying ', mask, ' to ', model_dir)
   mask_file <- file.path(model_dir, basename(mask))
@@ -238,6 +261,7 @@ if(! 'BRAIN' %in% c(args$DV, args$IV)){
 }
 
 model_name <- make.names(args$model_name)
+message('Creating model ', model_name)
 
 model_dir <- create_np_model_dir(args$base_dir, model_name, overwrite = args$overwrite)
 mask_file <- move_mask(args$mask, model_dir)
@@ -251,10 +275,11 @@ model_script <- write_model_script(model_dir = model_dir,
                                    id_var = args$covariates,
                                    overwrite = args$overwrite)
 
-make_readargs(mask_fname = basename(mask_file), 
-              set1 = args$set1, 
-              setlabels = args$setlabels, 
-              model_file = basename(model_file), 
-              testvoxel = args$testvoxel, 
-              output = args$output,
-              debugfile = 'debug.Rdata', hpc = 'slurm', jobs = args$jobs)
+readargs_file <- write_read_args(model_dir = model_dir,
+                                 mask_fname = basename(mask_file), 
+                                 set1 = args$set1, 
+                                 setlabels = args$setlabels, 
+                                 model_file = basename(model_file), 
+                                 testvoxel = args$testvoxel, 
+                                 output = args$output,
+                                 debugfile = 'debug.Rdata', hpc = 'slurm', jobs = args$jobs)
