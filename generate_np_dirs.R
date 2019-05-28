@@ -34,14 +34,14 @@ processVoxel <- function(v) {
   
   if(x == 'BRAIN'){
     header <- paste0(header,'
-  brain_df <- data.frame(BRAIN, idnum) #idnum is defined by neuropoint
+  brain_df <- data.frame(BRAIN, ', id_var, ') #the id variable is defined in the setlabels file
   
   # Compute Within-person Mean of brain data
-  win_mean <- aggregate(brain_df, by = list(idnum), FUN = mean)[,1:2]
-  colnames(win_mean) <- c("idnum", "WIN_BRAIN_MEAN")
-  brain_df <- merge(brain_df, win_mean, by="idnum")
+  win_mean <- aggregate(brain_df, by = list(', id_var, '), FUN = mean)[,1:2]
+  colnames(win_mean) <- c("', id_var, '", "WIN_BRAIN_MEAN")
+  brain_df <- merge(brain_df, win_mean, by="', id_var, '")
 
-  grandmean <- mean(ag$win_mean)
+  grandmean <- mean(win_mean$WIN_BRAIN_MEAN)
 
   # This is a bit of an extra step... Tara had this here so I\'m leaving it
   brain_df[, "', x_b_name,'"] <- brain_df$WIN_BRAIN_MEAN - grandmean
@@ -54,7 +54,7 @@ processVoxel <- function(v) {
   }
   allvars <- c(y, covariates, x_b_name, x_w_name, id_var)
   data_frame_args <- paste(
-    paste0(c(y, covariates, x_b_name, x_w_name), ' = ', c(y, covariates, x_b_name, x_w_name)),
+    paste0(c(y, covariates, x_b_name, x_w_name, id_var), ' = ', c(y, covariates, x_b_name, x_w_name, id_var)),
     collapse = ', \n    ')
   header <- paste0(header,'
   model_data <- data.frame(\n    ', data_frame_args,')')
@@ -66,7 +66,7 @@ make_lme_model_syntax <- function(y, x, model_name, within_prefix = 'WCEN_', bet
   x_w_name <- paste0(within_prefix, x)
   model_name_sw <- paste0(model_name, '_sw')
   
-  model_formula <- paste0(y, ' ~ ', paste(covariates, collapse = ' + '), ' + ', x_b_name, ' + ', x_w_name)
+  model_formula <- paste0(y, ' ~ 1 + ', paste(covariates, collapse = ' + '), ' + ', x_b_name, ' + ', x_w_name)
   model_syntax <- paste0('
   model_formula <- ', model_formula, '
 
@@ -76,7 +76,7 @@ make_lme_model_syntax <- function(y, x, model_name, within_prefix = 'WCEN_', bet
   # models in R. Behavior Research Methods, 49(4), 1494–1502. 
   # https://doi.org/10.3758/s13428-016-0809-y
   e <- try(', model_name, ' <-
-              nlme::lme(model_formula,
+              nlme::lme(', model_formula, ',
                         random = ~1 | ', id_var, ', data = model_data, 
                         method = "REML", na.action=na.omit) )
 
@@ -114,11 +114,11 @@ make_model_footer <- function(y, x, model_name, within_prefix = 'WCEN_', between
         return(coefs[, colname])
       }
     }))
-    names(reg_retvals) <- gsub("[\\(\\)]", "", gsub("(.*?)\\.(.*)", "\\2\\1", names(reg_retvals)))
+    names(reg_retvals) <- gsub("[\\\\(\\\\)]", "", gsub("(.*?)\\\\.(.*)", "\\\\2\\\\1", names(reg_retvals)))
     
     std_coefs <- coef(beta(', model_name, '))
     std_reg_retvals <- std_coefs[, "Value"]
-    names(std_reg_retvals) <- paste0(gsub("\\(*(.*?)\\)*\\.*\\z*$", "\\1", names(std_reg_retvals)), "-beta")
+    names(std_reg_retvals) <- paste0(gsub("\\\\(*(.*?)\\\\)*\\\\.*z*$", "\\\\1", names(std_reg_retvals)), "-beta")
   } else {
     model_terms <- c("Intercept", attr(terms(model_formula), "term.labels"))
     reg_retvals <- rep(NOVAL, length(model_terms) * length(name_col_correspondence))
@@ -138,7 +138,7 @@ make_model_footer <- function(y, x, model_name, within_prefix = 'WCEN_', between
       names(rval) <- rownames(coefs_sw)
       return(rval)
     }))
-    names(reg_retvals_sw) <- gsub("[\\(\\)]", "", gsub("(.*?)\\.(.*)", "\\2\\1", names(reg_retvals_sw)))
+    names(reg_retvals_sw) <- gsub("[\\\\(\\\\)]", "", gsub("(.*?)\\\\.(.*)", "\\\\2\\\\1", names(reg_retvals_sw)))
   } else {
     model_terms_sw <- c("Intercept", attr(terms(model_formula), "term.labels"))
     reg_retvals_sw <- rep(NOVAL, length(model_terms_sw) * length(name_col_correspondence_sw))
@@ -193,7 +193,7 @@ write_model_script <- function(model_dir, y, x, model_name,
 }
 
 write_read_args <- function(model_dir, mask_fname, set1, setlabels, model_file, testvoxel = '1000', output,
-                            debugfile = 'debug.Rdata', hpc = 'slurm', jobs = '40'){
+                            debugfile = 'debug.Rdata', hpc = 'slurm', jobs = '40', overwrite = FALSE){
   readargs_text <- make_readargs(mask_fname = mask_fname, 
                                  set1 = set1, 
                                  setlabels = setlabels, 
@@ -248,13 +248,9 @@ parser$add_argument('--bw_pre', type="character", help='Between-person IV name p
 parser$add_argument('--id_var', type="character", help='Column name of id variable', default = 'idnum')
 parser$add_argument('--covariates', type="character", nargs = '+', help='Column names of covariates', default = NULL)
 parser$add_argument('--testvoxel', type="character", help='Test voxel number', default = '10000')
-parser$add_argument('--job', type="character", help='Number of jobs', default = '40')
-parser$print_help()
+parser$add_argument('--jobs', type="character", help='Number of jobs', default = '40')
 
-args <- parser$parse_args(c('~/', 'episodic_auc', '--IV', 'EPISODICTOT', 
-                            '--mask', 'mask.nii.gz',
-                            '--DV', 'BRAIN', 
-                            '--covariates', 'TIMECENTER', '--overwrite'))
+args <- parser$parse_args()
 
 if(! 'BRAIN' %in% c(args$DV, args$IV)){
   stop('Either --DV or --IV must be "BRAIN"... else why are you using neuropoint?')
@@ -272,14 +268,17 @@ model_script <- write_model_script(model_dir = model_dir,
                                    within_prefix = args$win_pre, 
                                    between_prefix = args$bw_pre,
                                    covariates = args$covariates, 
-                                   id_var = args$covariates,
+                                   id_var = args$id_var,
                                    overwrite = args$overwrite)
 
 readargs_file <- write_read_args(model_dir = model_dir,
                                  mask_fname = basename(mask_file), 
                                  set1 = args$set1, 
                                  setlabels = args$setlabels, 
-                                 model_file = basename(model_file), 
+                                 model_file = basename(model_script), 
                                  testvoxel = args$testvoxel, 
                                  output = args$output,
-                                 debugfile = 'debug.Rdata', hpc = 'slurm', jobs = args$jobs)
+                                 debugfile = 'debug.Rdata', 
+                                 hpc = 'slurm', 
+                                 jobs = args$jobs,
+                                 overwrite = args$overwrite)
