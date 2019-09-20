@@ -18,7 +18,33 @@ create_np_model_dir <- function(basedir, model_name, overwrite = FALSE){
   return(model_dir)
 }
 
-make_model_header <- function(y, x, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum'){
+make_brain_centering_code <- function(x_w_name, x_b_name, id_var){
+  brain_centering <- paste0('
+  brain_df <- data.frame(BRAIN, ', id_var, ') #the id variable is defined in the setlabels file
+  
+  # Compute Within-person Mean of brain data
+  win_mean <- aggregate(brain_df, by = list(', id_var, '), FUN = mean)[,1:2]
+  colnames(win_mean) <- c("', id_var, '", "WIN_BRAIN_MEAN")
+  brain_df <- merge(brain_df, win_mean, by="', id_var, '")
+  
+  grandmean <- mean(win_mean$WIN_BRAIN_MEAN)
+  
+  brain_df[, "', x_b_name,'"] <- brain_df$WIN_BRAIN_MEAN - grandmean
+  brain_df[, "', x_w_name,'"] <- BRAIN - brain_df$WIN_BRAIN_MEAN
+  
+  # attach to these new variables
+  ', x_b_name,' <- brain_df[, "', x_b_name,'"]
+  ', x_w_name,' <- brain_df[, "', x_w_name,'"]
+  ')
+  return(brain_centering)
+}
+
+make_model_formula <- function(y, x_w_name, x_b_name, covariates){
+  model_formula <- paste0(y, ' ~ 1 + ', paste(covariates, collapse = ' + '), ' + ', x_b_name, ' + ', x_w_name)
+  return(model_formula)
+}
+
+make_model_header <- function(y, x, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum', is_permute = FALSE, permutationRDS = NULL){
   
   x_b_name <- paste0(between_prefix, x)
   x_w_name <- paste0(within_prefix, x)
@@ -27,30 +53,24 @@ make_model_header <- function(y, x, within_prefix = 'WCEN_', between_prefix = 'G
 packages <- list(\'nlme\', \'clubSandwich\', \'reghelper\')
 loaded <- lapply(packages, library, character.only = TRUE)
 
-processVoxel <- function(v) {
+processVoxel <- function(v) {'
+  if(is_permute){
+    model_formula <- make_model_formula(y = y, x_w_name = x_w_name, x_b_name = x_b_name, covariates = covariates)
+    header <- paste0(header, '\n
+  permutationRDS = \'', permutationRDS,'\'
+  targetDV = \'', x_w_name, '\'
+  formula = ', model_formula)
+  }
+  header <- paste0(header, '\n
   BRAIN <- voxeldat[,v]
   NOVAL <- 999
-  retvals <- numeric()'
+  retvals <- numeric()')
   
   if(x == 'BRAIN'){
-    header <- paste0(header,'
-  brain_df <- data.frame(BRAIN, ', id_var, ') #the id variable is defined in the setlabels file
-  
-  # Compute Within-person Mean of brain data
-  win_mean <- aggregate(brain_df, by = list(', id_var, '), FUN = mean)[,1:2]
-  colnames(win_mean) <- c("', id_var, '", "WIN_BRAIN_MEAN")
-  brain_df <- merge(brain_df, win_mean, by="', id_var, '")
-
-  grandmean <- mean(win_mean$WIN_BRAIN_MEAN)
-
-  # This is a bit of an extra step... Tara had this here so I\'m leaving it
-  brain_df[, "', x_b_name,'"] <- brain_df$WIN_BRAIN_MEAN - grandmean
-  brain_df[, "', x_w_name,'"] <- BRAIN - brain_df$WIN_BRAIN_MEAN
-  
-  # attach to these new variables
-  ', x_b_name,' <- brain_df[, "', x_b_name,'"]
-  ', x_w_name,' <- brain_df[, "', x_w_name,'"]
-') 
+    header <- paste0(header, 
+                     make_brain_centering_code(x_w_name = x_w_name, 
+                                               x_b_name = x_b_name, 
+                                               id_var = id_var)) 
   }
   allvars <- c(y, covariates, x_b_name, x_w_name, id_var)
   data_frame_args <- paste(
@@ -58,6 +78,14 @@ processVoxel <- function(v) {
     collapse = ', \n    ')
   header <- paste0(header,'
   model_data <- data.frame(\n    ', data_frame_args,')')
+  if(is_permute){
+    header <- paste0(header, '\n
+  if(v%%5e3 == 0){
+    apercent <- sprintf("%3.0f%%", v/dim(voxeldat)[2]*100)
+                     status_message <- paste0(apercent, ": Voxel ", v, " of ", dim(voxeldat)[2], "...")
+                     message(status_message)
+  }')
+  }
   return(header)
 }
 
@@ -66,7 +94,7 @@ make_lme_model_syntax <- function(y, x, model_name, within_prefix = 'WCEN_', bet
   x_w_name <- paste0(within_prefix, x)
   model_name_sw <- paste0(model_name, '_sw')
   
-  model_formula <- paste0(y, ' ~ 1 + ', paste(covariates, collapse = ' + '), ' + ', x_b_name, ' + ', x_w_name)
+  model_formula <- make_model_formula(y = y, covariates = covariates, x_w_name = x_w_name, x_b_name = x_b_name)
   model_syntax <- paste0('
   model_formula <- ', model_formula, '
 
@@ -85,6 +113,33 @@ make_lme_model_syntax <- function(y, x, model_name, within_prefix = 'WCEN_', bet
   e_sandwich <- try(', model_name_sw, ' <- clubSandwich::coef_test(e, vcov = "CR2"))
 ')
   return(model_syntax)
+}
+
+make_permute_tail <- function(){
+  permute_tail <- paste0("
+  # `method = REML` for unbiased estimate of variance parameters.
+  # See: 
+  # Luke, S. G. (2017). Evaluating significance in linear mixed-effects
+  # models in R. Behavior Research Methods, 49(4), 1494–1502. 
+  # https://doi.org/10.3758/s13428-016-0809-y
+  
+  permuteModel <- neuropointillist::npointLmePermutation(permutationNumber = permutationNumber, 
+                                                         permutationRDS = permutationRDS,
+                                                         targetDV = targetDV,
+                                                         z_sw = TRUE, vcov = 'CR2',
+                                                         formula = formula,
+                                                         random = ~1 | idnum,
+                                                         data = model_data,
+                                                         lmeOpts = list(method = 'REML', na.action=na.omit))
+  if(is.null(permuteModel$Z)){
+    Z <- NOVAL
+  } else {
+    Z <- permuteModel$Z
+  }
+  names(Z) <- paste0(targetDV,'-z_sw')
+  return(Z)
+}")
+  return(permute_tail)
 }
 
 make_model_footer <- function(y, x, model_name, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum'){
@@ -152,7 +207,8 @@ make_model_footer <- function(y, x, model_name, within_prefix = 'WCEN_', between
 }
 
 make_readargs <- function(mask_fname, set1, setlabels, model_file, testvoxel = '1000', output,
-                          debugfile = 'debug.Rdata', hpc = 'slurm', jobs = '40'){
+                          debugfile = 'debug.Rdata', hpc = 'slurm', jobs = '40',
+                          is_permute = FALSE, permuteN){
   output <- file.path(output, paste0(output, '.'))
   setlabel_args <- paste0('"--setlabels', 1:length(setlabels), '", "', setlabels, '", ')
   readargs <- paste0('
@@ -162,25 +218,57 @@ cmdargs <- c("-m","', mask_fname, '", "--set1", "', set1, '",
              "--testvoxel", "', testvoxel, '",
              "--output", "', output, '",
              "--debugfile", "', debugfile, '",
-             "--', hpc, 'N", "', jobs, '")
+             "--', hpc, 'N", "', jobs, '"')
+  if(is_permute){
+    readargs <- paste0(readargs, ',
+             "--permute", "', permuteN,'"')
+  }
+  readargs <- paste0(readargs, ')
 ')
   return(readargs)
 }
 
+make_writeperms <- function(model_dir, debug_data, id_var, permuteN, permutationRDS){
+  writeperms <- paste0("
+library(permute)
+
+#This presumes you've arleady set up the target model
+load('", debug_data, "')
+attach(designmat)
+nperm <- ", permuteN, " #Make sure this number matches input to NeuroPointillist or is bigger
+
+set.seed(622019*37)
+ctrl.free <- how(within = Within(type = 'free'), nperm = nperm, blocks = ", id_var, ")
+perm_set.free <- shuffleSet(n = ", id_var, ", control = ctrl.free)
+saveRDS(perm_set.free, file.path('", model_dir,"', '", permutationRDS, "'))")
+}
+
 write_model_script <- function(model_dir, y, x, model_name, 
                                within_prefix = 'WCEN_', between_prefix = 'GCEN_', 
-                               covariates = NULL, id_var = 'idnum',  overwrite = FALSE){
-  header <- make_model_header(y = y, x = x, 
-                              within_prefix = within_prefix, between_prefix = between_prefix, 
-                              covariates = covariates, id_var = id_var)
-  model_syntax <- make_lme_model_syntax(y = y, x = x, model_name = model_name, 
-                                        within_prefix = within_prefix, between_prefix = between_prefix, 
-                                        covariates = covariates, id_var = id_var)
-  footer <- make_model_footer(y = y, x = x, model_name = model_name, 
-                              within_prefix = within_prefix, between_prefix = between_prefix, 
-                              covariates = covariates, id_var = id_var)
-  model_text <- paste(header, model_syntax, footer, sep = '\n')
-  model_file <- file.path(model_dir, 'model.R')
+                               covariates = NULL, id_var = 'idnum',  overwrite = FALSE, 
+                               is_permute = FALSE, permutationRDS = NULL){
+  
+  if(is_permute){
+    header <- make_model_header(y = y, x = x, 
+                                within_prefix = within_prefix, between_prefix = between_prefix, 
+                                covariates = covariates, id_var = id_var, 
+                                is_permute = is_permute, permutationRDS = permutationRDS)
+    permute_tail <- make_permute_tail()
+    model_text <- paste(header, permute_tail, sep = '\n')
+    model_file <- file.path(model_dir, 'permute_free_model.R')
+  } else {
+    header <- make_model_header(y = y, x = x, 
+                                within_prefix = within_prefix, between_prefix = between_prefix, 
+                                covariates = covariates, id_var = id_var, is_permute = FALSE)
+    model_syntax <- make_lme_model_syntax(y = y, x = x, model_name = model_name, 
+                                          within_prefix = within_prefix, between_prefix = between_prefix, 
+                                          covariates = covariates, id_var = id_var)
+    footer <- make_model_footer(y = y, x = x, model_name = model_name, 
+                                within_prefix = within_prefix, between_prefix = between_prefix, 
+                                covariates = covariates, id_var = id_var)
+    model_text <- paste(header, model_syntax, footer, sep = '\n')
+    model_file <- file.path(model_dir, 'model.R')
+  }
   message('Model file: ', model_file)
   if(file.exists(model_file) & !overwrite){
     stop('Model file exists. See help.')
@@ -193,7 +281,8 @@ write_model_script <- function(model_dir, y, x, model_name,
 }
 
 write_read_args <- function(model_dir, mask_fname, set1, setlabels, model_file, testvoxel = '1000', output,
-                            debugfile = 'debug.Rdata', hpc = 'slurm', jobs = '40', overwrite = FALSE){
+                            debugfile = 'debug.Rdata', hpc = 'slurm', jobs = '40', overwrite = FALSE,
+                            is_permute = FALSE, permuteN){
   readargs_text <- make_readargs(mask_fname = mask_fname, 
                                  set1 = set1, 
                                  setlabels = setlabels, 
@@ -202,7 +291,9 @@ write_read_args <- function(model_dir, mask_fname, set1, setlabels, model_file, 
                                  output = output,
                                  debugfile = debugfile, 
                                  hpc = hpc, 
-                                 jobs = jobs)
+                                 jobs = jobs,
+                                 is_permute = is_permute, 
+                                 permuteN = permuteN)
   readargs_file <- file.path(model_dir, 'readargs.R')
   message('readargs file: ', readargs_file)
   if(file.exists(readargs_file) & !overwrite){
@@ -214,7 +305,24 @@ write_read_args <- function(model_dir, mask_fname, set1, setlabels, model_file, 
   }
   return(readargs_file)
 }
-  
+ 
+write_writeperms <- function(model_dir, debug_data, id_var, permuteN, permutationRDS, overwrite = FALSE){
+  writeperms_text <- make_writeperms(model_dir = model_dir, 
+                                     debug_data = debug_data, 
+                                     id_var = id_var, 
+                                     permuteN = permuteN, 
+                                     permutationRDS = permutationRDS)
+  writeperms_file <- file.path(model_dir, 'write_permutations.R')
+  if(file.exists(writeperms_file) & !overwrite){
+    stop('readargs file exists. See help.')
+  } else {
+    f <- file(writeperms_file, open = 'w')
+    writeLines(writeperms_text, f)
+    close(f)
+  }
+  return(writeperms_file)
+}
+ 
 move_mask <- function(mask, model_dir){
   message('Copying ', mask, ' to ', model_dir)
   mask_file <- file.path(model_dir, basename(mask))
@@ -249,12 +357,38 @@ parser$add_argument('--id_var', type="character", help='Column name of id variab
 parser$add_argument('--covariates', type="character", nargs = '+', help='Column names of covariates', default = NULL)
 parser$add_argument('--testvoxel', type="character", help='Test voxel number', default = '10000')
 parser$add_argument('--jobs', type="character", help='Number of jobs', default = '40')
+parser$add_argument('--permute', action='store_true', help = 'Are we building permutation models?')
+parser$add_argument('--permuteN', type="character", help = 'Number of permutations', default = '1000')
+parser$add_argument('--permutationRDS', type="character", help='Name of RDS file containing permutation matrix', default = 'permutation_set-free.RDS')
+
+args <- parser$parse_args(c(
+  "--IV", "BRAIN",
+  "--DV", "GAD7_TOT",
+  "--mask", "~/NewNeuropoint/dep.fear/make_perms/mask.nii.gz",
+  "--set1", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/setfilenames_happyGTcalm.txt",
+  "--setlabels", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/depanxcov-midpoint5.csv",
+  "--output", "test.test.gad.happy",
+  "--win_pre", "WCEN_",
+  "--bw_pre", "GCEN_",
+  "--id_var", "idnum",
+  "--covariates", "TIMECENTER",
+  "--jobs", "60",
+  "--overwrite",
+  "--permute",
+  "--permuteN", "1000",
+  "--permutationRDS", "permute_free.RDS",
+  getwd(),
+  "test.test.gad.happy"))
 
 args <- parser$parse_args()
 
 if(! 'BRAIN' %in% c(args$DV, args$IV)){
   stop('Either --DV or --IV must be "BRAIN"... else why are you using neuropoint?')
 }
+if(args$permute & args$permutationRDS == ''){
+  stop('Permutation file RDS not given -- required if `--permute` is set.')
+}
+
 
 model_name <- make.names(args$model_name)
 message('Creating model ', model_name)
@@ -269,7 +403,9 @@ model_script <- write_model_script(model_dir = model_dir,
                                    between_prefix = args$bw_pre,
                                    covariates = args$covariates, 
                                    id_var = args$id_var,
-                                   overwrite = args$overwrite)
+                                   overwrite = args$overwrite,
+                                   is_permute = args$permute,
+                                   permutationRDS = args$permutationRDS)
 
 readargs_file <- write_read_args(model_dir = model_dir,
                                  mask_fname = basename(mask_file), 
@@ -281,4 +417,10 @@ readargs_file <- write_read_args(model_dir = model_dir,
                                  debugfile = 'debug.Rdata', 
                                  hpc = 'slurm', 
                                  jobs = args$jobs,
-                                 overwrite = args$overwrite)
+                                 overwrite = args$overwrite,
+                                 is_permute = args$permute,
+                                 permuteN = args$permuteN)
+
+writeperms_file <- write_writeperms()
+
+###TESTING
