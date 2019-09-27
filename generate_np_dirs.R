@@ -44,30 +44,22 @@ make_model_formula <- function(y, x_w_name, x_b_name, covariates){
   return(model_formula)
 }
 
-make_model_header <- function(y, x, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum', is_permute = FALSE, permutationRDS = NULL){
-  
+disagg_x_names <- function(x, between_prefix, within_prefix){
   x_b_name <- paste0(between_prefix, x)
   x_w_name <- paste0(within_prefix, x)
-  
-  header <- '
-packages <- list(\'nlme\', \'clubSandwich\', \'reghelper\')
-loaded <- lapply(packages, library, character.only = TRUE)
+  return(c(x_b_name = x_b_name, x_w_name = x_w_name))
+}
 
-processVoxel <- function(v) {'
-  if(is_permute){
-    model_formula <- make_model_formula(y = y, x_w_name = x_w_name, x_b_name = x_b_name, covariates = covariates)
-    header <- paste0(header, '\n
-  permutationRDS = \'', permutationRDS,'\'
-  targetDV = \'', x_w_name, '\'
-  formula = ', model_formula)
-  }
-  header <- paste0(header, '\n
-  BRAIN <- voxeldat[,v]
-  NOVAL <- 999
-  retvals <- numeric()')
+make_model_data <- function(y, x, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum'){
+  disagg_names <- disagg_x_names(x, between_prefix, within_prefix)
+  x_b_name <- disagg_names['x_b_name']
+  x_w_name <- disagg_names['x_w_name']
+  
+  mode_data_code <- '\n
+  BRAIN <- voxeldat[,v]'
   
   if(x == 'BRAIN'){
-    header <- paste0(header, 
+    mode_data_code <- paste0(mode_data_code, 
                      make_brain_centering_code(x_w_name = x_w_name, 
                                                x_b_name = x_b_name, 
                                                id_var = id_var)) 
@@ -76,8 +68,38 @@ processVoxel <- function(v) {'
   data_frame_args <- paste(
     paste0(c(y, covariates, x_b_name, x_w_name, id_var), ' = ', c(y, covariates, x_b_name, x_w_name, id_var)),
     collapse = ', \n    ')
-  header <- paste0(header,'
-  model_data <- data.frame(\n    ', data_frame_args,')')
+  mode_data_code <- paste0(mode_data_code,'
+  model_data <- na.omit(data.frame(\n    ', data_frame_args,'))')
+  return(mode_data_code)
+}
+
+make_model_header <- function(y, x, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum', is_permute = FALSE, permutationRDS = NULL){
+  
+  disagg_names <- disagg_x_names(x, between_prefix, within_prefix)
+  x_b_name <- disagg_names['x_b_name']
+  x_w_name <- disagg_names['x_w_name']
+  
+  header <- '
+packages <- list(\'nlme\', \'clubSandwich\', \'reghelper\')
+loaded <- lapply(packages, library, character.only = TRUE)
+
+processVoxel <- function(v) {
+
+  NOVAL <- 999
+  retvals <- numeric()'
+  if(is_permute){
+    model_formula <- make_model_formula(y = y, x_w_name = x_w_name, x_b_name = x_b_name, covariates = covariates)
+    header <- paste0(header, '\n
+  permutationRDS = \'', permutationRDS,'\'
+  targetDV = \'', x_w_name, '\'
+  formula = ', model_formula)
+  }
+  header <- paste0(header, 
+                   make_model_data(y = y, x = x, 
+                                   within_prefix = within_prefix, 
+                                   between_prefix = between_prefix, 
+                                   covariates = covariates, 
+                                   id_var = id_var))
   if(is_permute){
     header <- paste0(header, '\n
   if(v%%5e3 == 0){
@@ -90,8 +112,9 @@ processVoxel <- function(v) {'
 }
 
 make_lme_model_syntax <- function(y, x, model_name, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum'){
-  x_b_name <- paste0(between_prefix, x)
-  x_w_name <- paste0(within_prefix, x)
+  disagg_names <- disagg_x_names(x, between_prefix, within_prefix)
+  x_b_name <- disagg_names['x_b_name']
+  x_w_name <- disagg_names['x_w_name']
   model_name_sw <- paste0(model_name, '_sw')
   
   model_formula <- make_model_formula(y = y, covariates = covariates, x_w_name = x_w_name, x_b_name = x_b_name)
@@ -143,8 +166,9 @@ make_permute_tail <- function(){
 }
 
 make_model_footer <- function(y, x, model_name, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum'){
-  x_b_name <- paste0(between_prefix, x)
-  x_w_name <- paste0(within_prefix, x)
+  disagg_names <- disagg_x_names(x, between_prefix, within_prefix)
+  x_b_name <- disagg_names['x_b_name']
+  x_w_name <- disagg_names['x_w_name']
   model_name_sw <- paste0(model_name, '_sw')
   
   footer <- paste0('
@@ -228,19 +252,32 @@ cmdargs <- c("-m","', mask_fname, '", "--set1", "', set1, '",
   return(readargs)
 }
 
-make_writeperms <- function(model_dir, debug_data, id_var, permuteN, permutationRDS){
+make_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, seed = NULL){
+  model_data <- make_model_data(y = y, x = x, 
+                                within_prefix = within_prefix, 
+                                between_prefix = between_prefix, 
+                                covariates = covariates, 
+                                id_var = id_var)
   writeperms <- paste0("
 library(permute)
 
+message('Loading data...')
 #This presumes you've arleady set up the target model
 load('", debug_data, "')
 attach(designmat)
 nperm <- ", permuteN, " #Make sure this number matches input to NeuroPointillist or is bigger
+v <- 1 #to get example brain data
 
-set.seed(622019*37)
+", model_data, "
+
+set.seed(", seed, ")
+message('Generating ', nperm, ' permutations...')
 ctrl.free <- how(within = Within(type = 'free'), nperm = nperm, blocks = ", id_var, ")
 perm_set.free <- shuffleSet(n = ", id_var, ", control = ctrl.free)
-saveRDS(perm_set.free, file.path('", model_dir,"', '", permutationRDS, "'))")
+permpath <- file.path('", model_dir,"', '", permutationRDS, "')
+message('Saving permutations to ', permpath)
+saveRDS(perm_set.free, permpath)")
+  return(writeperms)
 }
 
 write_model_script <- function(model_dir, y, x, model_name, 
@@ -306,19 +343,26 @@ write_read_args <- function(model_dir, mask_fname, set1, setlabels, model_file, 
   return(readargs_file)
 }
  
-write_writeperms <- function(model_dir, debug_data, id_var, permuteN, permutationRDS, overwrite = FALSE){
-  writeperms_text <- make_writeperms(model_dir = model_dir, 
+write_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, overwrite = FALSE, seed = NULL){
+  writeperms_text <- make_writeperms(y = y, x = x, 
+                                     within_prefix = within_prefix, 
+                                     between_prefix = between_prefix, 
+                                     covariates = covariates, 
+                                     id_var = id_var,
+                                     model_dir = model_dir, 
                                      debug_data = debug_data, 
-                                     id_var = id_var, 
                                      permuteN = permuteN, 
-                                     permutationRDS = permutationRDS)
+                                     permutationRDS = permutationRDS,
+                                     seed = seed)
   writeperms_file <- file.path(model_dir, 'write_permutations.R')
+  message('permutation generation file: ', writeperms_file)
   if(file.exists(writeperms_file) & !overwrite){
-    stop('readargs file exists. See help.')
+    stop('permutation generation file exists. See help.')
   } else {
     f <- file(writeperms_file, open = 'w')
     writeLines(writeperms_text, f)
     close(f)
+    message('Remember to move it to the npoint-generated directory after running npoint.')
   }
   return(writeperms_file)
 }
@@ -333,6 +377,11 @@ move_mask <- function(mask, model_dir){
     file.copy(mask, mask_file)
   }
   return(mask_file)
+}
+
+run_writeperms <- function(writeperms_file){
+  source(writeperms_file)
+  return(NULL)
 }
 
 parser <- ArgumentParser(description='Create a neuropoint model directory to be run')
@@ -359,26 +408,9 @@ parser$add_argument('--testvoxel', type="character", help='Test voxel number', d
 parser$add_argument('--jobs', type="character", help='Number of jobs', default = '40')
 parser$add_argument('--permute', action='store_true', help = 'Are we building permutation models?')
 parser$add_argument('--permuteN', type="character", help = 'Number of permutations', default = '1000')
+parser$add_argument('--debugdata', type="character", help = 'Path to debug data to use in generating permutation matrix', default = '')
+parser$add_argument('--seed', type="integer", help="Seed for permutation randomization.", default=NULL)
 parser$add_argument('--permutationRDS', type="character", help='Name of RDS file containing permutation matrix', default = 'permutation_set-free.RDS')
-
-args <- parser$parse_args(c(
-  "--IV", "BRAIN",
-  "--DV", "GAD7_TOT",
-  "--mask", "~/NewNeuropoint/dep.fear/make_perms/mask.nii.gz",
-  "--set1", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/setfilenames_happyGTcalm.txt",
-  "--setlabels", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/depanxcov-midpoint5.csv",
-  "--output", "test.test.gad.happy",
-  "--win_pre", "WCEN_",
-  "--bw_pre", "GCEN_",
-  "--id_var", "idnum",
-  "--covariates", "TIMECENTER",
-  "--jobs", "60",
-  "--overwrite",
-  "--permute",
-  "--permuteN", "1000",
-  "--permutationRDS", "permute_free.RDS",
-  getwd(),
-  "test.test.gad.happy"))
 
 args <- parser$parse_args()
 
@@ -388,7 +420,9 @@ if(! 'BRAIN' %in% c(args$DV, args$IV)){
 if(args$permute & args$permutationRDS == ''){
   stop('Permutation file RDS not given -- required if `--permute` is set.')
 }
-
+if(args$permute & is.null(args$seed)){
+  stop('Randome seed required if `--permute` is set. Use `--seed INT`')
+}
 
 model_name <- make.names(args$model_name)
 message('Creating model ', model_name)
@@ -421,6 +455,42 @@ readargs_file <- write_read_args(model_dir = model_dir,
                                  is_permute = args$permute,
                                  permuteN = args$permuteN)
 
-writeperms_file <- write_writeperms()
+if(args$permute){
+  writeperms_file <- write_writeperms(y = args$DV, 
+                                      x = args$IV, 
+                                      within_prefix = args$win_pre, 
+                                      between_prefix = args$bw_pre,
+                                      covariates = args$covariates, 
+                                      id_var = args$id_var,
+                                      model_dir = model_dir, 
+                                      debug_data = args$debugdata, 
+                                      permuteN = args$permuteN, 
+                                      permutationRDS = args$permutationRDS, 
+                                      overwrite = args$overwrite,
+                                      seed = args$seed)
+  message('Generating permutations...')
+  nada <- run_writeperms(writeperms_file)
+}
 
-###TESTING
+### TESTING
+# 
+# args <- parser$parse_args(c(
+#   "--IV", "BRAIN",
+#   "--DV", "GAD7_TOT",
+#   "--mask", "~/NewNeuropoint/dep.fear/make_perms/mask.nii.gz",
+#   "--set1", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/setfilenames_happyGTcalm.txt",
+#   "--setlabels", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/depanxcov-midpoint5.csv",
+#   "--output", "test.test.gad.happy",
+#   "--win_pre", "WCEN_",
+#   "--bw_pre", "GCEN_",
+#   "--id_var", "idnum",
+#   "--covariates", "TIMECENTER",
+#   "--jobs", "60",
+#   "--overwrite",
+#   "--permute",
+#   "--permuteN", "1000",
+#   "--debugdata", "~/NewNeuropoint/gad.fear/gad.fear/debug.Rdata",
+#   "--seed", "8982",
+#   "--permutationRDS", "permute_free.RDS",
+#   getwd(),
+#   "test.test.gad.happy"))
