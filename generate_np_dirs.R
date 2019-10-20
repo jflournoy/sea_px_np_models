@@ -73,7 +73,7 @@ make_model_data <- function(y, x, within_prefix = 'WCEN_', between_prefix = 'GCE
   return(mode_data_code)
 }
 
-make_model_header <- function(y, x, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum', is_permute = FALSE, permutationRDS = NULL){
+make_model_header <- function(y, x, model_dir, within_prefix = 'WCEN_', between_prefix = 'GCEN_', covariates = NULL, id_var = 'idnum', is_permute = FALSE, permutationRDS = NULL, permtype = 'within'){
   
   disagg_names <- disagg_x_names(x, between_prefix, within_prefix)
   x_b_name <- disagg_names['x_b_name']
@@ -88,10 +88,15 @@ processVoxel <- function(v) {
   NOVAL <- 999
   retvals <- numeric()'
   if(is_permute){
+    if(permtype == 'within'){
+      targetname <- x_w_name
+    } else if(permtype == 'between'){
+      targetname <- x_b_name
+    }
     model_formula <- make_model_formula(y = y, x_w_name = x_w_name, x_b_name = x_b_name, covariates = covariates)
     header <- paste0(header, '\n
-  permutationRDS = \'', permutationRDS,'\'
-  targetDV = \'', x_w_name, '\'
+  permutationRDS = \'', file.path(model_dir, permutationRDS),'\'
+  targetDV = \'', targetname, '\'
   formula = ', model_formula)
   }
   header <- paste0(header, 
@@ -252,12 +257,19 @@ cmdargs <- c("-m","', mask_fname, '", "--set1", "', set1, '",
   return(readargs)
 }
 
-make_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, seed = NULL){
+make_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, seed = NULL, permtype = 'within'){
   model_data <- make_model_data(y = y, x = x, 
                                 within_prefix = within_prefix, 
                                 between_prefix = between_prefix, 
                                 covariates = covariates, 
                                 id_var = id_var)
+  if(permtype == 'within'){
+    ctrl_text <- paste0("
+ctrl.free <- how(within = Within(type = 'free'), nperm = nperm, blocks = model_data$", id_var, ")")
+  } else if(permtype == 'between') {
+    ctrl_text <- paste0("
+ctrl.free <- how(within = Within(type = 'free'), nperm = nperm, blocks = NULL)")
+  }
   writeperms <- paste0("
 library(permute)
 
@@ -272,8 +284,8 @@ v <- 1 #to get example brain data
 
 set.seed(", seed, ")
 message('Generating ', nperm, ' permutations...')
-ctrl.free <- how(within = Within(type = 'free'), nperm = nperm, blocks = ", id_var, ")
-perm_set.free <- shuffleSet(n = ", id_var, ", control = ctrl.free)
+", ctrl_text, "
+perm_set.free <- shuffleSet(n = model_data$", id_var, ", control = ctrl.free)
 permpath <- file.path('", model_dir,"', '", permutationRDS, "')
 message('Saving permutations to ', permpath)
 saveRDS(perm_set.free, permpath)")
@@ -283,13 +295,13 @@ saveRDS(perm_set.free, permpath)")
 write_model_script <- function(model_dir, y, x, model_name, 
                                within_prefix = 'WCEN_', between_prefix = 'GCEN_', 
                                covariates = NULL, id_var = 'idnum',  overwrite = FALSE, 
-                               is_permute = FALSE, permutationRDS = NULL){
+                               is_permute = FALSE, permutationRDS = NULL, permtype = 'within'){
   
   if(is_permute){
-    header <- make_model_header(y = y, x = x, 
+    header <- make_model_header(y = y, x = x, model_dir = model_dir,
                                 within_prefix = within_prefix, between_prefix = between_prefix, 
                                 covariates = covariates, id_var = id_var, 
-                                is_permute = is_permute, permutationRDS = permutationRDS)
+                                is_permute = is_permute, permutationRDS = permutationRDS, permtype = permtype)
     permute_tail <- make_permute_tail()
     model_text <- paste(header, permute_tail, sep = '\n')
     model_file <- file.path(model_dir, 'permute_free_model.R')
@@ -343,7 +355,7 @@ write_read_args <- function(model_dir, mask_fname, set1, setlabels, model_file, 
   return(readargs_file)
 }
  
-write_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, overwrite = FALSE, seed = NULL){
+write_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, overwrite = FALSE, seed = NULL, permtype = 'within'){
   writeperms_text <- make_writeperms(y = y, x = x, 
                                      within_prefix = within_prefix, 
                                      between_prefix = between_prefix, 
@@ -353,7 +365,7 @@ write_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id
                                      debug_data = debug_data, 
                                      permuteN = permuteN, 
                                      permutationRDS = permutationRDS,
-                                     seed = seed)
+                                     seed = seed, permtype = permtype)
   writeperms_file <- file.path(model_dir, 'write_permutations.R')
   message('permutation generation file: ', writeperms_file)
   if(file.exists(writeperms_file) & !overwrite){
@@ -408,6 +420,7 @@ parser$add_argument('--testvoxel', type="character", help='Test voxel number', d
 parser$add_argument('--jobs', type="character", help='Number of jobs', default = '40')
 parser$add_argument('--permute', action='store_true', help = 'Are we building permutation models?')
 parser$add_argument('--permuteN', type="character", help = 'Number of permutations', default = '1000')
+parser$add_argument('--permuteType', type="character", help = 'within or between', default = 'within')
 parser$add_argument('--debugdata', type="character", help = 'Path to debug data to use in generating permutation matrix', default = '')
 parser$add_argument('--seed', type="integer", help="Seed for permutation randomization.", default=NULL)
 parser$add_argument('--permutationRDS', type="character", help='Name of RDS file containing permutation matrix', default = 'permutation_set-free.RDS')
@@ -439,7 +452,8 @@ model_script <- write_model_script(model_dir = model_dir,
                                    id_var = args$id_var,
                                    overwrite = args$overwrite,
                                    is_permute = args$permute,
-                                   permutationRDS = args$permutationRDS)
+                                   permutationRDS = args$permutationRDS,
+                                   permtype = args$permuteType)
 
 readargs_file <- write_read_args(model_dir = model_dir,
                                  mask_fname = basename(mask_file), 
@@ -467,12 +481,13 @@ if(args$permute){
                                       permuteN = args$permuteN, 
                                       permutationRDS = args$permutationRDS, 
                                       overwrite = args$overwrite,
-                                      seed = args$seed)
+                                      seed = args$seed,
+                                      permtype = args$permuteType)
   message('Generating permutations...')
   nada <- run_writeperms(writeperms_file)
 }
 
-### TESTING
+# ## TESTING
 # 
 # args <- parser$parse_args(c(
 #   "--IV", "BRAIN",
@@ -489,6 +504,7 @@ if(args$permute){
 #   "--overwrite",
 #   "--permute",
 #   "--permuteN", "1000",
+#   "--permuteType", "between",
 #   "--debugdata", "~/NewNeuropoint/gad.fear/gad.fear/debug.Rdata",
 #   "--seed", "8982",
 #   "--permutationRDS", "permute_free.RDS",
