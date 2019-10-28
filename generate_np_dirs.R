@@ -143,13 +143,20 @@ make_lme_model_syntax <- function(y, x, model_name, within_prefix = 'WCEN_', bet
   return(model_syntax)
 }
 
-make_permute_tail <- function(){
+make_permute_tail <- function(permtype = 'within', id_var = NULL, timevar = NULL){
   permute_tail <- paste0("
   # `method = REML` for unbiased estimate of variance parameters.
   # See: 
   # Luke, S. G. (2017). Evaluating significance in linear mixed-effects
   # models in R. Behavior Research Methods, 49(4), 1494–1502. 
   # https://doi.org/10.3758/s13428-016-0809-y
+  ")
+  if(permtype == 'between'){
+    permute_tail <- paste0(permute_tail, "
+  full_design <- dplyr::arrange(data.frame(expand.grid(", id_var," = unique(model_data$", id_var,"),
+                                                       ", timevar," = unique(model_data$", timevar,"))),
+                                ", id_var,", ", timevar,")
+  model_data <- dplyr::left_join(full_design, model_data, by = c('", id_var,"', '", timevar,"'))
   
   permuteModel <- neuropointillist::npointLmePermutation(permutationNumber = permutationNumber, 
                                                          permutationRDS = permutationRDS,
@@ -158,7 +165,23 @@ make_permute_tail <- function(){
                                                          formula = formula,
                                                          random = ~1 | idnum,
                                                          data = model_data,
-                                                         lmeOpts = list(method = 'REML', na.action=na.omit))
+                                                         level = 0,
+                                                         lmeOptsResid = list(method = 'REML', na.action=na.exclude),
+                                                         lmeOptsPerm = list(method = 'REML', na.action=na.omit))
+                           ")
+  } else {
+    permute_tail <- paste0(permute_tail, "
+
+  permuteModel <- neuropointillist::npointLmePermutation(permutationNumber = permutationNumber, 
+                                                         permutationRDS = permutationRDS,
+                                                         targetDV = targetDV,
+                                                         z_sw = TRUE, vcov = 'CR2',
+                                                         formula = formula,
+                                                         random = ~1 | idnum,
+                                                         data = model_data,
+                                                         lmeOpts = list(method = 'REML', na.action=na.omit))")
+  }
+  permute_tail <- paste0(permute_tail, "
   if(is.null(permuteModel$Z)){
     Z <- NOVAL
   } else {
@@ -257,7 +280,7 @@ cmdargs <- c("-m","', mask_fname, '", "--set1", "', set1, '",
   return(readargs)
 }
 
-make_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, seed = NULL, permtype = 'within'){
+make_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, timevar = NULL, seed = NULL, permtype = 'within'){
   model_data <- make_model_data(y = y, x = x, 
                                 within_prefix = within_prefix, 
                                 between_prefix = between_prefix, 
@@ -268,7 +291,15 @@ make_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_
 ctrl.free <- how(within = Within(type = 'free'), nperm = nperm, blocks = model_data$", id_var, ")")
   } else if(permtype == 'between') {
     ctrl_text <- paste0("
-ctrl.free <- how(within = Within(type = 'free'), nperm = nperm, blocks = NULL)")
+full_design <- dplyr::arrange(data.frame(expand.grid(", id_var," = unique(model_data$", id_var,"),
+                                                     ", timevar," = unique(model_data$", timevar,"))),
+                              ", id_var,", ", timevar,")
+model_data <- dplyr::left_join(full_design, model_data, by = c('", id_var,"', '", timevar,"'))
+
+ctrl.free <- how(within = Within(type = 'none'), 
+                 plots = Plots(strata = model_data$", id_var, ", type = 'free'), 
+                 nperm = nperm, 
+                 blocks = NULL)")
   }
   writeperms <- paste0("
 library(permute)
@@ -294,15 +325,16 @@ saveRDS(perm_set.free, permpath)")
 
 write_model_script <- function(model_dir, y, x, model_name, 
                                within_prefix = 'WCEN_', between_prefix = 'GCEN_', 
-                               covariates = NULL, id_var = 'idnum',  overwrite = FALSE, 
-                               is_permute = FALSE, permutationRDS = NULL, permtype = 'within'){
+                               covariates = NULL, id_var = 'idnum', timevar = 'TIMECENTER', 
+                               overwrite = FALSE, is_permute = FALSE, permutationRDS = NULL, 
+                               permtype = 'within'){
   
   if(is_permute){
     header <- make_model_header(y = y, x = x, model_dir = model_dir,
                                 within_prefix = within_prefix, between_prefix = between_prefix, 
-                                covariates = covariates, id_var = id_var, 
+                                covariates = covariates, id_var = id_var,
                                 is_permute = is_permute, permutationRDS = permutationRDS, permtype = permtype)
-    permute_tail <- make_permute_tail()
+    permute_tail <- make_permute_tail(permtype = permtype, id_var = id_var, timevar = timevar)
     model_text <- paste(header, permute_tail, sep = '\n')
     model_file <- file.path(model_dir, 'permute_free_model.R')
   } else {
@@ -355,12 +387,13 @@ write_read_args <- function(model_dir, mask_fname, set1, setlabels, model_file, 
   return(readargs_file)
 }
  
-write_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, overwrite = FALSE, seed = NULL, permtype = 'within'){
+write_writeperms <- function(y, x, within_prefix, between_prefix, covariates, id_var, model_dir, debug_data, permuteN, permutationRDS, timevar = NULL, overwrite = FALSE, seed = NULL, permtype = 'within'){
   writeperms_text <- make_writeperms(y = y, x = x, 
                                      within_prefix = within_prefix, 
                                      between_prefix = between_prefix, 
                                      covariates = covariates, 
                                      id_var = id_var,
+                                     timevar = timevar,
                                      model_dir = model_dir, 
                                      debug_data = debug_data, 
                                      permuteN = permuteN, 
@@ -415,6 +448,7 @@ parser$add_argument('--overwrite', action='store_true', help = 'Overwrite existi
 parser$add_argument('--win_pre', type="character", help='Within-person IV name prefix', default = 'WCEN_')
 parser$add_argument('--bw_pre', type="character", help='Between-person IV name prefix', default = 'GCEN_')
 parser$add_argument('--id_var', type="character", help='Column name of id variable', default = 'idnum')
+parser$add_argument('--time_var', type="character", help='Column name of time variable', default = 'TIMECENTER')
 parser$add_argument('--covariates', type="character", nargs = '+', help='Column names of covariates', default = NULL)
 parser$add_argument('--testvoxel', type="character", help='Test voxel number', default = '10000')
 parser$add_argument('--jobs', type="character", help='Number of jobs', default = '40')
@@ -450,6 +484,7 @@ model_script <- write_model_script(model_dir = model_dir,
                                    between_prefix = args$bw_pre,
                                    covariates = args$covariates, 
                                    id_var = args$id_var,
+                                   timevar = args$time_var,
                                    overwrite = args$overwrite,
                                    is_permute = args$permute,
                                    permutationRDS = args$permutationRDS,
@@ -476,6 +511,7 @@ if(args$permute){
                                       between_prefix = args$bw_pre,
                                       covariates = args$covariates, 
                                       id_var = args$id_var,
+                                      timevar = args$time_var,
                                       model_dir = model_dir, 
                                       debug_data = args$debugdata, 
                                       permuteN = args$permuteN, 
@@ -487,26 +523,27 @@ if(args$permute){
   nada <- run_writeperms(writeperms_file)
 }
 
-# ## TESTING
-# 
-# args <- parser$parse_args(c(
-#   "--IV", "BRAIN",
-#   "--DV", "GAD7_TOT",
-#   "--mask", "~/NewNeuropoint/dep.fear/make_perms/mask.nii.gz",
-#   "--set1", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/setfilenames_happyGTcalm.txt",
-#   "--setlabels", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/depanxcov-midpoint5.csv",
-#   "--output", "test.test.gad.happy",
-#   "--win_pre", "WCEN_",
-#   "--bw_pre", "GCEN_",
-#   "--id_var", "idnum",
-#   "--covariates", "TIMECENTER",
-#   "--jobs", "60",
-#   "--overwrite",
-#   "--permute",
-#   "--permuteN", "1000",
-#   "--permuteType", "between",
-#   "--debugdata", "~/NewNeuropoint/gad.fear/gad.fear/debug.Rdata",
-#   "--seed", "8982",
-#   "--permutationRDS", "permute_free.RDS",
-#   getwd(),
-#   "test.test.gad.happy"))
+## TESTING
+
+args <- parser$parse_args(c(
+  "--IV", "BRAIN",
+  "--DV", "GAD7_TOT",
+  "--mask", "~/NewNeuropoint/dep.fear/make_perms/mask.nii.gz",
+  "--set1", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/setfilenames_happyGTcalm.txt",
+  "--setlabels", "/mnt/stressdevlab/stress_pipeline/Group/FaceReactivity/NewNeuropoint/datafiles/depanxcov-midpoint5.csv",
+  "--output", "test.test.gad.happy",
+  "--win_pre", "WCEN_",
+  "--bw_pre", "GCEN_",
+  "--id_var", "idnum",
+  "--time_var", "TIMECENTER",
+  "--covariates", "TIMECENTER",
+  "--jobs", "60",
+  "--overwrite",
+  "--permute",
+  "--permuteN", "1000",
+  "--permuteType", "between",
+  "--debugdata", "~/NewNeuropoint/gad.fear/gad.fear/debug.Rdata",
+  "--seed", "8982",
+  "--permutationRDS", "permute_free.RDS",
+  getwd(),
+  "test.test.gad.happy"))
