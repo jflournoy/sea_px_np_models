@@ -471,6 +471,12 @@ if(args$permute & is.null(args$seed)){
   stop('Randome seed required if `--permute` is set. Use `--seed INT`')
 }
 
+if(is.null(args$covariates) || class(args$covariates) != 'character'){
+  covariates <- NULL
+} else {
+  covariates <- unlist(strsplit(args$covariates, split=' '))
+}
+
 model_name <- make.names(args$model_name)
 message('Creating model ', model_name)
 
@@ -482,7 +488,7 @@ model_script <- write_model_script(model_dir = model_dir,
                                    model_name = model_name, 
                                    within_prefix = args$win_pre, 
                                    between_prefix = args$bw_pre,
-                                   covariates = args$covariates, 
+                                   covariates = covariates, 
                                    id_var = args$id_var,
                                    timevar = args$time_var,
                                    overwrite = args$overwrite,
@@ -509,7 +515,7 @@ if(args$permute){
                                       x = args$IV, 
                                       within_prefix = args$win_pre, 
                                       between_prefix = args$bw_pre,
-                                      covariates = args$covariates, 
+                                      covariates = covariates, 
                                       id_var = args$id_var,
                                       timevar = args$time_var,
                                       model_dir = model_dir, 
